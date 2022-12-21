@@ -9,7 +9,7 @@ Measuring impact of Gated ReLU v.s. ReLU in deep learning architectures on CIFAR
 ## Training
 ```
 # Start training with: 
-python main.py --gated_relu --data_dir = DATA_DIR
+python main.py --gated_relu --data_dir DATA_DIR
 
 ```
 
