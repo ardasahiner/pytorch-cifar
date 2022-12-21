@@ -1,6 +1,6 @@
 # Impact of Gated ReLU
 
-Measuring impact of Gated ReLU v.s. ReLU in deep learning architectures on CIFAR-10. 
+Measuring impact of Gated ReLU v.s. ReLU in deep learning architectures on CIFAR-10. Currently only ResNet architecture is implemented.
 
 ## Prerequisites
 - Python 3.6+
