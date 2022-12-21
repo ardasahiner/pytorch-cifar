@@ -10,18 +10,51 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class GatedConv2d(nn.Module):
+    def __init__(self, in_planes, planes, kernel_size=1, stride=1, padding=0, bias=True, bn=False):
+        super(GatedConv2d, self).__init__()
+        self.pattern_conv = nn.Conv2d(in_planes, planes, kernel_size=kernel_size, stride=stride, padding=padding, bias=bias)
+        self.forward_conv = nn.Conv2d(in_planes, planes, kernel_size=kernel_size, stride=stride, padding=padding, bias=bias)
+        self.bn = bn
+        if self.bn:
+            self.pattern_bn = nn.BatchNorm2d(planes)
+            self.forward_bn = nn.BatchNorm2d(planes)
+            for p in self.pattern_bn.parameters():
+                p.requires_grad = False
+
+        for p in self.pattern_conv.parameters():
+            p.requires_grad = False
+
+    def forward(self, x):
+        with torch.no_grad():
+            if self.bn:
+                patterns = (self.pattern_bn(self.pattern_conv(x)) >= 0).float()
+            else:
+                patterns = (self.pattern_conv(x) >= 0).float()
+
+        forward = self.forward_conv(x)
+        if self.bn:
+            forward = self.forward_bn(forward)
+
+        return forward*patterns
 
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, in_planes, planes, stride=1):
+    def __init__(self, in_planes, planes, stride=1, gated_relu=False):
         super(BasicBlock, self).__init__()
-        self.conv1 = nn.Conv2d(
-            in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3,
-                               stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
+        self.gated_relu = gated_relu
+
+        if not self.gated_relu:
+            self.conv1 = nn.Conv2d(
+                in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+            self.bn1 = nn.BatchNorm2d(planes)
+            self.conv2 = nn.Conv2d(planes, planes, kernel_size=3,
+                                   stride=1, padding=1, bias=False)
+            self.bn2 = nn.BatchNorm2d(planes)
+        else:
+            self.conv1 = GatedConv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False, bn=True)
+            self.conv2 = GatedConv2d(planes, planes, kernel_size=3, padding=1, bias=False, bn=True)
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != self.expansion*planes:
@@ -32,26 +65,35 @@ class BasicBlock(nn.Module):
             )
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
+        if not self.gated_relu:
+            out = F.relu(self.bn1(self.conv1(x)))
+            out = F.relu(self.bn2(self.conv2(out)))
+        else:
+            out = self.conv2(self.conv1(x))
         out += self.shortcut(x)
-        out = F.relu(out)
         return out
 
 
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, in_planes, planes, stride=1):
+    def __init__(self, in_planes, planes, stride=1, gated_relu=False):
         super(Bottleneck, self).__init__()
-        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3,
-                               stride=stride, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.conv3 = nn.Conv2d(planes, self.expansion *
-                               planes, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(self.expansion*planes)
+        self.gated_relu = gated_relu
+
+        if not self.gated_relu:
+            self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
+            self.bn1 = nn.BatchNorm2d(planes)
+            self.conv2 = nn.Conv2d(planes, planes, kernel_size=3,
+                                   stride=stride, padding=1, bias=False)
+            self.bn2 = nn.BatchNorm2d(planes)
+            self.conv3 = nn.Conv2d(planes, self.expansion *
+                                   planes, kernel_size=1, bias=False)
+            self.bn3 = nn.BatchNorm2d(self.expansion*planes)
+        else:
+            self.conv1 = GatedConv2d(in_planes, planes, kernel_size=1, bias=False, bn=True)
+            self.conv2 = GatedConv2d(planes, planes, kernel_size=3, padding=1, stride=stride, bias=False, bn=True)
+            self.conv3 = GatedConv2d(planes, sel.fexplansion*planes, kernel_size=1, bias=False)
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != self.expansion*planes:
@@ -62,22 +104,28 @@ class Bottleneck(nn.Module):
             )
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = F.relu(self.bn2(self.conv2(out)))
-        out = self.bn3(self.conv3(out))
+        if not self.gated_relu:
+            out = F.relu(self.bn1(self.conv1(x)))
+            out = F.relu(self.bn2(self.conv2(out)))
+            out = F.relu(self.bn3(self.conv3(out)))
+        else:
+            out = self.conv3(self.conv2(self.conv1(x)))
         out += self.shortcut(x)
-        out = F.relu(out)
         return out
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10):
+    def __init__(self, block, num_blocks, num_classes=10, gated_relu=False):
         super(ResNet, self).__init__()
         self.in_planes = 64
+        self.gated_relu = gated_relu
 
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3,
-                               stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
+        if not gated_relu:
+            self.conv1 = nn.Conv2d(3, 64, kernel_size=3,
+                                   stride=1, padding=1, bias=False)
+            self.bn1 = nn.BatchNorm2d(64)
+        else:
+            self.conv1 = GatedConv2d(3, 64, kernel_size=3, padding=1, bias=False, bn=True)
         self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
@@ -88,12 +136,15 @@ class ResNet(nn.Module):
         strides = [stride] + [1]*(num_blocks-1)
         layers = []
         for stride in strides:
-            layers.append(block(self.in_planes, planes, stride))
+            layers.append(block(self.in_planes, planes, stride, gated_relu=self.gated_relu))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
+        if self.gated_relu:
+            out = self.conv1(x)
+        else:
+            out = F.relu(self.bn1(self.conv1(x)))
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
@@ -104,24 +155,24 @@ class ResNet(nn.Module):
         return out
 
 
-def ResNet18():
-    return ResNet(BasicBlock, [2, 2, 2, 2])
+def ResNet18(gated_relu=False):
+    return ResNet(BasicBlock, [2, 2, 2, 2], gated_relu=gated_relu)
 
 
-def ResNet34():
-    return ResNet(BasicBlock, [3, 4, 6, 3])
+def ResNet34(gated_relu=False):
+    return ResNet(BasicBlock, [3, 4, 6, 3], gated_relu=gated_relu)
 
 
-def ResNet50():
-    return ResNet(Bottleneck, [3, 4, 6, 3])
+def ResNet50(gated_relu=False):
+    return ResNet(Bottleneck, [3, 4, 6, 3], gated_relu=gated_relu)
 
 
-def ResNet101():
-    return ResNet(Bottleneck, [3, 4, 23, 3])
+def ResNet101(gated_relu=False):
+    return ResNet(Bottleneck, [3, 4, 23, 3], gated_relu=gated_relu)
 
 
-def ResNet152():
-    return ResNet(Bottleneck, [3, 8, 36, 3])
+def ResNet152(gated_relu=False):
+    return ResNet(Bottleneck, [3, 8, 36, 3], gated_relu=gated_relu)
 
 
 def test():
